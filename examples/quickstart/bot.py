@@ -38,6 +38,7 @@ logger.info("✅ Silero VAD model loaded")
 
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import LLMRunFrame
+from pipecat.observers.summarization_observer import SummarizationObserver
 
 logger.info("Loading pipeline components...")
 from pipecat.pipeline.pipeline import Pipeline
@@ -60,7 +61,7 @@ load_dotenv(override=True)
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
-    logger.info(f"Starting bot")
+    logger.info("Starting bot")
 
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
@@ -96,25 +97,34 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         ]
     )
 
+    # --- Observer-based summarization (non-blocking) -------------------------
+    # PipelineTask uses TaskObserver internally, which proxies each observer using
+    # an internal queue+task so observer workloads don't block the realtime pipeline.
+    summarization_observer = SummarizationObserver(
+        on_summary_updated=lambda summary: logger.info(f"[summary updated]\n{summary}\n"),
+        summarize_on_turn_end=True,
+        summarize_on_transcript_update=False,
+    )
+
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
             enable_metrics=True,
             enable_usage_metrics=True,
         ),
-        observers=[RTVIObserver(rtvi)],
+        observers=[RTVIObserver(rtvi), summarization_observer],
     )
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        logger.info(f"Client connected")
+        logger.info("Client connected")
         # Kick off the conversation.
         messages.append({"role": "system", "content": "Say hello and briefly introduce yourself."})
         await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        logger.info(f"Client disconnected")
+        logger.info("Client disconnected")
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
